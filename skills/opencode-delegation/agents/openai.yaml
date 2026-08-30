@@ -1,0 +1,4 @@
+interface:
+  display_name: "OpenCode Delegation"
+  short_description: "Delegate bounded work through OpenCode models"
+  default_prompt: "Use $opencode-delegation to hand this task to a cost-efficient OpenCode worker."

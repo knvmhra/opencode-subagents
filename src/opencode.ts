@@ -1,0 +1,189 @@
+import { createHash } from "node:crypto"
+import { createRequire } from "node:module"
+import { dirname, join } from "node:path"
+import { OpenCode } from "@opencode-ai/client"
+import { Service } from "@opencode-ai/client/service"
+import type { Config, Connection, Location, Model, RemoteAuth, SessionCreate, Snapshot } from "./types.js"
+import { BridgeError, type AgentClient, type Connector, type SessionInfo, type SessionMessage } from "./types.js"
+
+type Client = ReturnType<typeof OpenCode.make>
+
+export class OpenCodeConnector implements Connector {
+  constructor(private readonly config: Config) {}
+
+  async connect(connection: Connection): Promise<AgentClient> {
+    if (connection.target === "remote_server") {
+      const client = new OpenCodeAgent(OpenCode.make({ baseUrl: connection.url, headers: headers(connection.auth) }))
+      await client.health()
+      return client
+    }
+
+    const bundled = this.config.service.command[0] === "opencode2"
+    const endpoint = await Service.ensure({
+      command: serviceCommand(this.config.service.command),
+      version: bundled ? bundledVersion : compatible,
+    })
+    const client = new OpenCodeAgent(OpenCode.make({ baseUrl: endpoint.url, headers: Service.headers(endpoint) }))
+    await client.health()
+    return client
+  }
+}
+
+export class OpenCodeAgent implements AgentClient {
+  constructor(private readonly client: Client) {}
+
+  async health(): Promise<{ version: string }> {
+    const health = await this.client.health.get()
+    return { version: health.version }
+  }
+
+  async create(input: SessionCreate): Promise<string> {
+    const session = await this.client.session.create({
+      title: input.title,
+      location: input.location,
+      ...(input.agent === undefined ? {} : { agent: input.agent }),
+      ...(input.model === undefined ? {} : { model: input.model }),
+      ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
+    })
+    return session.id
+  }
+
+  async prompt(sessionID: string, text: string): Promise<void> {
+    await this.client.session.prompt({ sessionID, text, delivery: "queue", resume: true })
+  }
+
+  async wait(sessionID: string): Promise<void> {
+    await this.client.session.wait({ sessionID })
+  }
+
+  async interrupt(sessionID: string): Promise<boolean> {
+    return (await this.client.session.interrupt({ sessionID, continue: false })).interrupted
+  }
+
+  async info(sessionID: string): Promise<SessionInfo> {
+    const session = await this.client.session.get({ sessionID })
+    return {
+      ...(session.outcome === undefined ? {} : { outcome: session.outcome }),
+      cost: session.cost,
+      tokens: session.tokens,
+    }
+  }
+
+  async messages(sessionID: string): Promise<SessionMessage[]> {
+    return (await this.client.session.context({ sessionID })).flatMap((message) => {
+      if (message.type !== "assistant") return []
+      const text = message.content
+        .filter((part) => part.type === "text")
+        .map((part) => part.text)
+        .join("\n")
+        .trim()
+      return [
+        {
+          type: message.type,
+          ...(text.length === 0 ? {} : { text }),
+          ...(message.error === undefined
+            ? {}
+            : { error: { type: message.error.type, message: message.error.message } }),
+        },
+      ]
+    })
+  }
+
+  async switchAgent(sessionID: string, agent: string): Promise<void> {
+    await this.client.session.switchAgent({ sessionID, agent })
+  }
+
+  async switchModel(sessionID: string, model: Model): Promise<void> {
+    await this.client.session.switchModel({ sessionID, model })
+  }
+
+  async permissions(sessionID: string): Promise<Array<{ id: string; action: string; resources: string[] }>> {
+    return (await this.client.permission.list({ sessionID })).map((request) => ({
+      id: request.id,
+      action: request.action,
+      resources: request.resources,
+    }))
+  }
+
+  async rejectPermission(sessionID: string, requestID: string): Promise<void> {
+    await this.client.permission.reply({
+      sessionID,
+      requestID,
+      reply: "reject",
+      message: "This delegated run is non-interactive. Return a concise blocked result instead of requesting approval.",
+    })
+  }
+
+  async forms(sessionID: string): Promise<Array<{ id: string; title: string }>> {
+    return (await this.client.form.list({ sessionID })).map((form) => ({ id: form.id, title: form.title }))
+  }
+
+  async cancelForm(sessionID: string, formID: string): Promise<void> {
+    await this.client.form.cancel({ sessionID, formID })
+  }
+
+  async snapshot(location: Location): Promise<Snapshot | undefined> {
+    const query = {
+      location: {
+        directory: location.directory,
+        ...(location.workspaceID === undefined ? {} : { workspace: location.workspaceID }),
+      },
+    }
+    try {
+      const [base, status, diff] = await Promise.all([
+        this.client.vcs.base(query),
+        this.client.vcs.status(query),
+        this.client.vcs.diff({ ...query, mode: "working", context: 0 }),
+      ])
+      const data = {
+        base: base.data?.ref,
+        status: status.data
+          .map((file) => ({ file: file.file, status: file.status, additions: file.additions, deletions: file.deletions }))
+          .sort((a, b) => a.file.localeCompare(b.file)),
+        diff: diff.data
+          .map((file) => ({ file: file.file, status: file.status, patch: file.patch }))
+          .sort((a, b) => a.file.localeCompare(b.file)),
+      }
+      return {
+        hash: createHash("sha256").update(JSON.stringify(data)).digest("hex"),
+        ...(data.base === undefined ? {} : { base: data.base }),
+        files: data.status.map((file) => file.file),
+      }
+    } catch {
+      return undefined
+    }
+  }
+
+  async remove(sessionID: string): Promise<void> {
+    await this.client.session.remove({ sessionID })
+  }
+}
+
+const require = createRequire(import.meta.url)
+const cliPackageFile = require.resolve("@opencode-ai/cli/package.json")
+export const bundledVersion = (require(cliPackageFile) as { version: string }).version
+
+/** Use the client-compatible CLI shipped with this package unless the user explicitly chose another command. */
+export function serviceCommand(command: string[]): string[] {
+  if (command[0] !== "opencode2") return command
+  return [join(dirname(cliPackageFile), "bin", "opencode2.exe"), ...command.slice(1)]
+}
+
+function compatible(version: string): boolean {
+  return version.startsWith("2.") || version.includes("next") || version.includes("beta") || version.startsWith("0.0.0-")
+}
+
+function headers(auth?: RemoteAuth): Record<string, string> | undefined {
+  if (auth === undefined) return undefined
+  if (auth.kind === "bearer") return { authorization: `Bearer ${secret(auth.tokenEnv)}` }
+  if (auth.kind === "basic") {
+    return { authorization: `Basic ${Buffer.from(`${auth.username}:${secret(auth.passwordEnv)}`).toString("base64")}` }
+  }
+  return { [auth.name]: secret(auth.valueEnv) }
+}
+
+function secret(name: string): string {
+  const value = process.env[name]
+  if (value === undefined) throw new BridgeError("missing_secret", `Environment variable ${name} is not set`)
+  return value
+}

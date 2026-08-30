@@ -1,0 +1,20 @@
+{
+  "aliases": {
+    "cheap-worker": {
+      "model": "openrouter/<provider>/<model>",
+      "agent": "build"
+    },
+    "fresh-reviewer": {
+      "model": "openrouter/<provider>/<review-model>",
+      "agent": "plan",
+      "instructions": "Prioritize correctness, regressions, and missing tests. Be terse."
+    }
+  },
+  "defaults": {
+    "worker": "cheap-worker",
+    "reviewer": "fresh-reviewer"
+  },
+  "service": {
+    "command": ["opencode2", "serve", "--service"]
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "name": "@inventum/opencode-subagents",
+  "version": "0.1.0",
+  "private": true,
+  "description": "An MCP control plane for delegating bounded work to OpenCode models.",
+  "type": "module",
+  "bin": {
+    "opencode-subagents": "dist/src/cli.js"
+  },
+  "exports": {
+    ".": "./dist/src/index.js"
+  },
+  "files": [
+    "dist/src",
+    "skills",
+    "config.example.json",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/chmod-bin.mjs",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "smoke": "npm run build && node scripts/mcp-smoke.mjs && node scripts/smoke.mjs",
+    "smoke:mcp": "npm run build && node scripts/mcp-smoke.mjs",
+    "start": "node dist/src/cli.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.0.0",
+    "@opencode-ai/cli": "0.0.0-beta-18684",
+    "@opencode-ai/client": "0.0.0-beta-18684",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "typescript": "6.0.3"
+  }
+}
