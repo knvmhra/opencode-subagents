@@ -105,6 +105,33 @@ test("non-interactive permission requests and questions are rejected", async () 
   await coordinator.close()
 })
 
+test("interrupt reports terminal and is idempotent", async () => {
+  const client = new FakeClient()
+  const coordinator = new Coordinator(config, new FakeConnector(client))
+  const setup = await coordinator.setup({ action: "local", directory: process.cwd() })
+  const started = await coordinator.start({ context_id: string(setup.context_id), task: "Open-ended work", access: "write" })
+  const runID = string(started.run_id)
+  assert.equal(started.terminal, false)
+
+  const all = await coordinator.status({ detail: "compact" })
+  const runs = all.runs as Array<Record<string, unknown>>
+  assert.equal(runs.length, 1)
+  assert.equal(typeof runs[0]!.terminal, "boolean")
+
+  const interrupting = await coordinator.interrupt({ run_id: runID, reason: "obsolete" })
+  assert.equal(interrupting.interrupted, true)
+  assert.equal(interrupting.state, "interrupting")
+  assert.equal(interrupting.terminal, false)
+  assert.equal(interrupting.reason, "obsolete")
+
+  const status = await terminal(coordinator, runID, "interrupted")
+  assert.equal((status.failure as { kind: string }).kind, "interrupted")
+
+  const again = await coordinator.interrupt({ run_id: runID })
+  assert.deepEqual(again, { run_id: runID, state: "interrupted", terminal: true, interrupted: false })
+  await coordinator.close()
+})
+
 test("close interrupts live sessions, removes them, and stops polling", async () => {
   const client = new FakeClient()
   const coordinator = new Coordinator(config, new FakeConnector(client))
@@ -273,8 +300,9 @@ async function terminal(
   let status: Record<string, unknown> = {}
   await until(async () => {
     status = await coordinator.status({ run_id: runID, detail: "result" })
-    return status.state === state
+    return status.terminal === true
   })
+  assert.equal(status.state, state)
   return status
 }
 

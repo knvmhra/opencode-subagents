@@ -92,7 +92,7 @@ For a normal checkout, setup is one call:
 { "action": "local", "directory": "/absolute/project/path" }
 ```
 
-Pass the returned `context_id` to `start`, poll `status` by `run_id`, and request `detail=result` only when the run is terminal. A successful work run can then be passed to `review`. Review refuses a candidate whose VCS snapshot changed after the source run, avoiding accidental review of a different filesystem state.
+Pass the returned `context_id` to `start`, poll `status` by `run_id` until it reports `terminal: true`, and request `detail=result` only then. A successful work run can then be passed to `review`. Review refuses a candidate whose VCS snapshot changed after the source run, avoiding accidental review of a different filesystem state.
 
 Environment preparation is two-phase by design:
 

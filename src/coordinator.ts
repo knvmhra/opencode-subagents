@@ -135,7 +135,7 @@ export class Coordinator {
 
   async interrupt(input: InterruptInput): Promise<Record<string, unknown>> {
     const run = this.needRun(input.run_id)
-    if (!active(run.state)) return { run_id: run.id, state: run.state, interrupted: false }
+    if (!active(run.state)) return { run_id: run.id, state: run.state, terminal: true, interrupted: false }
     run.state = "interrupting"
     const context = this.ready(run.contextID)
     const interrupted = await context.client.interrupt(run.sessionID)
@@ -147,6 +147,7 @@ export class Coordinator {
     return {
       run_id: run.id,
       state: run.state,
+      terminal: !active(run.state),
       interrupted,
       ...(input.reason === undefined ? {} : { reason: input.reason }),
     }
@@ -414,6 +415,7 @@ export class Coordinator {
       run_id: run.id,
       kind: run.kind,
       state: run.state,
+      terminal: !active(run.state),
       context_id: run.contextID,
       ...(run.sourceRunID === undefined ? {} : { source_run_id: run.sourceRunID }),
       alias: run.alias,

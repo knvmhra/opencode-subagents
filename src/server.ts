@@ -34,7 +34,8 @@ export function buildServer(coordinator: Coordinator): McpServer {
     "interrupt",
     {
       title: "Interrupt delegated work",
-      description: "Interrupt an active OpenCode work or review run while preserving its session and filesystem state.",
+      description:
+        "Interrupt an active OpenCode work or review run while preserving its session and filesystem state. The response reports interrupted and terminal; a run is only fully stopped once terminal is true.",
       inputSchema: InterruptSchema,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     },
@@ -46,7 +47,7 @@ export function buildServer(coordinator: Coordinator): McpServer {
     {
       title: "Check delegated work",
       description:
-        "Return compact state for one run or all current-session contexts and runs. Use detail=result only after completion; diagnostic includes OpenCode identifiers but never dumps the worker transcript.",
+        "Return compact state for one run or all current-session contexts and runs. Every run payload includes terminal: true once the run has stopped (succeeded, failed, blocked, or interrupted); use detail=result only when terminal is true. Diagnostic includes OpenCode identifiers but never dumps the worker transcript.",
       inputSchema: StatusSchema,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
