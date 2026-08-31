@@ -516,14 +516,16 @@ function location(context: Context & { directory: string }): Location {
 
 function verdict(result: string | undefined, state: RunState): "pass" | "fail" | "blocked" {
   if (state === "blocked") return "blocked"
-  const line = result?.match(/Verdict\s*[:\n]\s*(PASS|FAIL|BLOCKED)/i)?.[1]?.toUpperCase()
+  // Reviewers routinely decorate the requested headings with markdown ("## Verdict", "**PASS**").
+  // Tolerate that decoration; an unparseable verdict still fails closed.
+  const line = result?.match(/Verdict[*_\`]*\s*[:\n][\s#*_>\`-]*(PASS|FAIL|BLOCKED)\b/i)?.[1]?.toUpperCase()
   if (line === "PASS") return "pass"
   if (line === "BLOCKED") return "blocked"
   return "fail"
 }
 
 function blocked(result?: string): boolean {
-  return result !== undefined && /(?:^|\n)\s*(?:Outcome\s*[:\n]\s*)?BLOCKED\b/i.test(result)
+  return result !== undefined && /(?:^|\n)[\s#*_>\`-]*(?:Outcome[*_\`]*\s*[:\n][\s#*_>\`-]*)?BLOCKED\b/i.test(result)
 }
 
 function blocking(kind: FailureKind): boolean {

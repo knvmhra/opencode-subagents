@@ -105,6 +105,22 @@ test("non-interactive permission requests and questions are rejected", async () 
   await coordinator.close()
 })
 
+test("review verdicts survive markdown decoration", async () => {
+  const client = new FakeClient()
+  const coordinator = new Coordinator(config, new FakeConnector(client))
+  const setup = await coordinator.setup({ action: "local", directory: process.cwd() })
+  const started = await coordinator.start({ context_id: string(setup.context_id), task: "Implement", access: "write" })
+  client.snapshotValue = { hash: "candidate", base: "main", files: ["a.ts"] }
+  client.finish(client.created[0]!, "succeeded", "Outcome\nDone")
+  await terminal(coordinator, string(started.run_id), "succeeded")
+
+  const review = await coordinator.review({ run_id: string(started.run_id), allow_partial: false })
+  client.finish(client.created[1]!, "succeeded", "## Verdict\n\n**PASS**\n\n## Findings\n\n1. **Low** — nit.\n\n## Tests\n\npass")
+  const reviewed = await terminal(coordinator, string(review.run_id), "succeeded")
+  assert.equal(reviewed.verdict, "pass")
+  await coordinator.close()
+})
+
 test("interrupt reports terminal and is idempotent", async () => {
   const client = new FakeClient()
   const coordinator = new Coordinator(config, new FakeConnector(client))
