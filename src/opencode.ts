@@ -9,7 +9,16 @@ import { BridgeError, type AgentClient, type Connector, type SessionInfo, type S
 type Client = ReturnType<typeof OpenCode.make>
 
 export class OpenCodeConnector implements Connector {
+  /** True once ensure() decided to spawn or replace the local service in this process. */
+  private started = false
+  /** The in-flight ensure(), so shutdown cannot race a service that spawned but has not registered yet. */
+  private ensuring: Promise<unknown> = Promise.resolve()
+
   constructor(private readonly config: Config) {}
+
+  get startedService(): boolean {
+    return this.started
+  }
 
   async connect(connection: Connection): Promise<AgentClient> {
     if (connection.target === "remote_server") {
@@ -19,13 +28,34 @@ export class OpenCodeConnector implements Connector {
     }
 
     const bundled = this.config.service.command[0] === "opencode2"
-    const endpoint = await Service.ensure({
+    const ensuring = Service.ensure({
       command: serviceCommand(this.config.service.command),
       version: bundled ? bundledVersion : compatible,
+      onStart: () => {
+        this.started = true
+      },
     })
+    this.ensuring = ensuring.then(
+      () => undefined,
+      () => undefined,
+    )
+    const endpoint = await ensuring
     const client = new OpenCodeAgent(OpenCode.make({ baseUrl: endpoint.url, headers: Service.headers(endpoint) }))
     await client.health()
     return client
+  }
+
+  /**
+   * Stop the local OpenCode service only when this process started it. The service is a
+   * singleton that may be shared with the user's own opencode2 session, so an unconditional
+   * stop could kill a daemon this process does not own. Service.stop() re-reads the
+   * registration file, so if another instance replaced ours in the meantime the replacement
+   * is what gets stopped; the vendor exposes no pid from ensure() to do better.
+   */
+  async stopService(): Promise<void> {
+    if (!this.started) return
+    await this.ensuring
+    await Service.stop()
   }
 }
 

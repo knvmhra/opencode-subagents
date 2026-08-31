@@ -24,6 +24,7 @@ export class Coordinator {
   private readonly contexts = new Map<string, Context>()
   private readonly runs = new Map<string, Run>()
   private readonly cycles = new Map<string, number>()
+  private readonly stopping = new AbortController()
 
   constructor(
     private readonly config: Config,
@@ -213,14 +214,25 @@ export class Coordinator {
   }
 
   async close(): Promise<void> {
+    this.stopping.abort()
+    const failures: string[] = []
     await Promise.allSettled(
       [...this.runs.values()].map(async (run) => {
         const context = this.contexts.get(run.contextID)
         if (context?.client === undefined || run.sessionID.length === 0) return
-        if (active(run.state)) await context.client.interrupt(run.sessionID).catch(() => false)
-        await context.client.remove(run.sessionID).catch(() => undefined)
+        try {
+          if (active(run.state)) await context.client.interrupt(run.sessionID)
+          await context.client.remove(run.sessionID)
+        } catch (error) {
+          failures.push(`${run.id}: ${error instanceof Error ? error.message : String(error)}`)
+        }
       }),
     )
+    this.runs.clear()
+    this.cycles.clear()
+    if (failures.length > 0) {
+      throw new BridgeError("close_failed", `Failed to clean up delegated sessions: ${failures.join("; ")}`)
+    }
   }
 
   private async resume(input: StartInput): Promise<Record<string, unknown>> {
@@ -265,6 +277,7 @@ export class Coordinator {
   }
 
   private launch(run: Run): void {
+    if (this.stopping.signal.aborted) return
     const cycle = (this.cycles.get(run.id) ?? 0) + 1
     this.cycles.set(run.id, cycle)
     void this.settle(run, cycle)
@@ -273,7 +286,7 @@ export class Coordinator {
   private async settle(run: Run, cycle: number): Promise<void> {
     const context = this.ready(run.contextID)
     const stop = new AbortController()
-    const guard = this.guard(run, cycle, stop.signal)
+    const guard = this.guard(run, cycle, AbortSignal.any([stop.signal, this.stopping.signal]))
     let caught: unknown
     try {
       await context.client.wait(run.sessionID)
@@ -283,6 +296,7 @@ export class Coordinator {
       stop.abort()
       await guard
     }
+    if (this.stopping.signal.aborted) return
     if (this.cycles.get(run.id) !== cycle) return
 
     const [info, messages, snapshot] = await Promise.all([

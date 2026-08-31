@@ -1,6 +1,8 @@
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
+import { once } from "node:events"
 import { createInterface } from "node:readline"
+import { setTimeout as sleep } from "node:timers/promises"
 
 const child = spawn(process.execPath, ["dist/src/cli.js"], { stdio: ["pipe", "pipe", "pipe"] })
 const pending = new Map()
@@ -11,7 +13,8 @@ child.stderr.on("data", (chunk) => {
   stderr += chunk
 })
 
-createInterface({ input: child.stdout }).on("line", (line) => {
+const reader = createInterface({ input: child.stdout })
+reader.on("line", (line) => {
   const message = JSON.parse(line)
   const waiter = pending.get(message.id)
   if (waiter !== undefined) {
@@ -26,12 +29,17 @@ function request(id, method, params) {
       pending.delete(id)
       reject(new Error(`Timed out waiting for ${method}; stderr: ${stderr}`))
     }, 5_000)
+    timer.unref()
     pending.set(id, (message) => {
       clearTimeout(timer)
       resolve(message)
     })
     child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`)
   })
+}
+
+function exitOrTimeout() {
+  return Promise.race([once(child, "exit"), sleep(2_000, "timeout", { ref: false })])
 }
 
 try {
@@ -50,10 +58,22 @@ try {
     ["interrupt", "review", "setup", "start", "status"],
   )
   console.log("MCP surface healthy: setup, start, interrupt, status, review")
+
+  // The server must shut down cleanly when the client just closes the pipe.
+  child.stdin.end()
+  assert.notEqual(await exitOrTimeout(), "timeout", `Server did not exit after stdin EOF; stderr: ${stderr}`)
+  assert.equal(child.exitCode, 0, `Server exited with code ${child.exitCode}; stderr: ${stderr}`)
+  console.log("Clean shutdown on stdin EOF")
 } finally {
-  child.kill("SIGTERM")
-  await Promise.race([
-    new Promise((resolve) => child.once("exit", resolve)),
-    new Promise((resolve) => setTimeout(resolve, 2_000)),
-  ])
+  if (child.exitCode === null && child.signalCode === null) {
+    child.kill("SIGTERM")
+    if ((await exitOrTimeout()) === "timeout") {
+      child.kill("SIGKILL")
+      await exitOrTimeout()
+    }
+  }
+  reader.close()
+  child.stdin.destroy()
+  child.stdout.destroy()
+  child.stderr.destroy()
 }

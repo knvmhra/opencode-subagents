@@ -105,6 +105,24 @@ test("non-interactive permission requests and questions are rejected", async () 
   await coordinator.close()
 })
 
+test("close interrupts live sessions, removes them, and stops polling", async () => {
+  const client = new FakeClient()
+  const coordinator = new Coordinator(config, new FakeConnector(client))
+  const setup = await coordinator.setup({ action: "local", directory: process.cwd() })
+  await coordinator.start({ context_id: string(setup.context_id), task: "Never finishes", access: "write" })
+  await until(() => client.polls >= 1)
+
+  await coordinator.close()
+  assert.deepEqual(client.interrupted, ["session_1"])
+  assert.deepEqual(client.removed, ["session_1"])
+
+  const polls = client.polls
+  await new Promise((resolve) => setTimeout(resolve, 500))
+  assert.equal(client.polls, polls)
+
+  await coordinator.close()
+})
+
 test("model parsing and provider error classification", () => {
   assert.deepEqual(parseModel("openrouter/deepseek/deepseek-v3#fast"), {
     providerID: "openrouter",
@@ -132,6 +150,9 @@ class FakeClient implements AgentClient {
   readonly switchedModels: Model[] = []
   readonly rejected: string[] = []
   readonly cancelled: string[] = []
+  readonly interrupted: string[] = []
+  readonly removed: string[] = []
+  polls = 0
   snapshotValue: Snapshot = { hash: "clean", base: "main", files: [] }
   pendingPermissions: Array<{ id: string; action: string; resources: string[] }> = []
   pendingForms: Array<{ id: string; title: string }> = []
@@ -172,6 +193,7 @@ class FakeClient implements AgentClient {
   }
 
   async interrupt(sessionID: string): Promise<boolean> {
+    this.interrupted.push(sessionID)
     const session = this.session(sessionID)
     session.info.outcome = "interrupted"
     session.resolve?.()
@@ -193,6 +215,7 @@ class FakeClient implements AgentClient {
   }
 
   async permissions(_sessionID: string): Promise<Array<{ id: string; action: string; resources: string[] }>> {
+    this.polls += 1
     return this.pendingPermissions
   }
 
@@ -215,6 +238,7 @@ class FakeClient implements AgentClient {
   }
 
   async remove(sessionID: string): Promise<void> {
+    this.removed.push(sessionID)
     this.sessions.delete(sessionID)
   }
 

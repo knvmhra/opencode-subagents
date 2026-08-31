@@ -14,7 +14,7 @@ The server deliberately does not proxy chat. Workers return a short structured h
 
 ## Design boundaries
 
-- State is scoped to the lifetime of the MCP process. Shutdown interrupts active work and removes its OpenCode sessions.
+- State is scoped to the lifetime of the MCP process. Shutdown (SIGINT, SIGTERM, or the client closing the stdio pipe) interrupts active work, removes its OpenCode sessions, and stops the bundled OpenCode service only when this process started it; a service already running for your own `opencode2` session is left alone.
 - A context has at most one declared writer. No worktrees are created; runs share the checkout selected by `setup`.
 - `access=read` and the reviewer's `plan` agent are coordination contracts, not a security sandbox. Do not point an untrusted model at valuable credentials or a sensitive host.
 - There is no local token or spend policy. OpenRouter/provider limits remain the authority. Credit, budget, authentication, rate-limit, provider, context-window, and permission failures are returned as typed run failures.
@@ -112,6 +112,6 @@ npm test
 npm run smoke
 ```
 
-`smoke` verifies the stdio MCP handshake and exact five-tool surface, then starts the bundled OpenCode service with isolated XDG directories under the system temp directory, checks its health, and stops it. It does not invoke a model. Use `npm run smoke:mcp` when localhost binding is unavailable.
+`smoke` verifies the stdio MCP handshake, the exact five-tool surface, and a clean server exit when the client closes the pipe, then starts the bundled OpenCode service with isolated XDG directories under the system temp directory, checks its health, and stops it. It does not invoke a model. On failure the isolated XDG directory is left in place for inspection. Use `npm run smoke:mcp` when localhost binding is unavailable.
 
 The implementation currently targets the pinned OpenCode 2 beta API. Keep `@opencode-ai/client` and `@opencode-ai/cli` on the same exact version when upgrading.
