@@ -19,6 +19,7 @@ type DashRun = {
 
 type DashSession = {
   pid: number
+  dispatcher?: { pid: number; command: string }
   updated_at: number
   contexts: Array<{ context_id: string; directory?: string }>
   runs: DashRun[]
@@ -93,7 +94,8 @@ function render(): void {
   for (const session of found) {
     const directories = session.contexts.map((context) => basename(context.directory ?? context.context_id)).join(", ")
     lines.push("")
-    lines.push(paint(`● pid ${session.pid}  ${directories}`, "1;34"))
+    const via = session.dispatcher === undefined ? "" : `  ${paint(`via ${session.dispatcher.command} (${session.dispatcher.pid})`, "90")}`
+    lines.push(`${paint(`● pid ${session.pid}  ${directories}`, "1;34")}${via}`)
     const columns = [22, 7, 13, 30, 8, 9, 16]
     const fixed = columns.reduce((sum, column) => sum + column + 2, 0)
     const taskWidth = Math.max(12, width - fixed)

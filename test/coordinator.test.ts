@@ -185,6 +185,7 @@ test("dash state file tracks runs and is cleared on close", async () => {
   assert.equal(live.runs[0]!.run_id, started.run_id)
   assert.equal(live.runs[0]!.task, "Dashboard visibility")
   assert.equal(live.runs[0]!.state, "running")
+  assert.equal((live as unknown as { dispatcher: { pid: number } }).dispatcher.pid, process.ppid)
 
   client.finish(client.created[0]!, "succeeded", "Outcome\nDone")
   await terminal(coordinator, string(started.run_id), "succeeded")
