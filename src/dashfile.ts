@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process"
-import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 
 /** Who spawned this MCP server (Claude Code, Codex, a script); lets the dash tell sessions apart. */
 function detectDispatcher(): { pid: number; command: string } {
@@ -48,4 +48,47 @@ export function writeDash(payload: Record<string, unknown>): void {
 export function clearDash(): void {
   // Best-effort: the dash also reaps files whose process has exited.
   rmSync(join(dashDir(), `${process.pid}.json`), { force: true })
+}
+
+function markerFile(): string {
+  return join(dirname(dashDir()), "service-started-by-bridge")
+}
+
+/** Other live bridge sessions, judged by dash state files whose process is still alive. */
+export function otherLiveBridgeSessions(): boolean {
+  try {
+    return readdirSync(dashDir()).some((name) => {
+      if (!name.endsWith(".json")) return false
+      const pid = Number(name.slice(0, -".json".length))
+      if (!Number.isInteger(pid) || pid === process.pid) return false
+      try {
+        process.kill(pid, 0)
+        return true
+      } catch (error) {
+        return (error as NodeJS.ErrnoException).code === "EPERM"
+      }
+    })
+  } catch {
+    return false
+  }
+}
+
+/** Record that a bridge process started the shared OpenCode service, so the last bridge session out may stop it. */
+export function markServiceStartedByBridge(): void {
+  try {
+    mkdirSync(dirname(markerFile()), { recursive: true })
+    writeFileSync(markerFile(), String(process.pid))
+  } catch (error) {
+    console.error(
+      `[opencode-subagents] dash: cannot write service marker: ${error instanceof Error ? error.message : String(error)}`,
+    )
+  }
+}
+
+export function serviceStartedByBridge(): boolean {
+  return existsSync(markerFile())
+}
+
+export function clearServiceMarker(): void {
+  rmSync(markerFile(), { force: true })
 }

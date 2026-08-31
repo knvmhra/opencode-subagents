@@ -14,7 +14,7 @@ The server deliberately does not proxy chat. Workers return a short structured h
 
 ## Design boundaries
 
-- State is scoped to the lifetime of the MCP process. Shutdown (SIGINT, SIGTERM, or the client closing the stdio pipe) interrupts active work, removes its OpenCode sessions, and stops the bundled OpenCode service only when this process started it; a service already running for your own `opencode2` session is left alone.
+- State is scoped to the lifetime of the MCP process. Shutdown (SIGINT, SIGTERM, or the client closing the stdio pipe) interrupts active work, removes its OpenCode sessions, and stops the bundled OpenCode service only when this is the last live bridge session and the service was bridge-started; a service already running for your own `opencode2` session, or still in use by another bridge session, is left alone.
 - A context has at most one declared writer. No worktrees are created; runs share the checkout selected by `setup`.
 - `access=read` and the reviewer's `plan` agent are coordination contracts, not a security sandbox. Do not point an untrusted model at valuable credentials or a sensitive host.
 - There is no local token or spend policy. OpenRouter/provider limits remain the authority. Credit, budget, authentication, rate-limit, provider, context-window, and permission failures are returned as typed run failures.

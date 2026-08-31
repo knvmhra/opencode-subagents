@@ -5,12 +5,15 @@ import { OpenCode } from "@opencode-ai/client"
 import { Service } from "@opencode-ai/client/service"
 import type { Config, Connection, Location, Model, RemoteAuth, SessionCreate, Snapshot } from "./types.js"
 import { BridgeError, type AgentClient, type Connector, type SessionInfo, type SessionMessage } from "./types.js"
+import { clearServiceMarker, markServiceStartedByBridge, otherLiveBridgeSessions, serviceStartedByBridge } from "./dashfile.js"
 
 type Client = ReturnType<typeof OpenCode.make>
 
 export class OpenCodeConnector implements Connector {
   /** True once ensure() decided to spawn or replace the local service in this process. */
   private started = false
+  /** True once this process connected to the shared local service at all. */
+  private usedLocal = false
   /** The in-flight ensure(), so shutdown cannot race a service that spawned but has not registered yet. */
   private ensuring: Promise<unknown> = Promise.resolve()
 
@@ -28,11 +31,13 @@ export class OpenCodeConnector implements Connector {
     }
 
     const bundled = this.config.service.command[0] === "opencode2"
+    this.usedLocal = true
     const ensuring = Service.ensure({
       command: serviceCommand(this.config.service.command),
       version: bundled ? bundledVersion : compatible,
       onStart: () => {
         this.started = true
+        markServiceStartedByBridge()
       },
     })
     this.ensuring = ensuring.then(
@@ -53,9 +58,17 @@ export class OpenCodeConnector implements Connector {
    * is what gets stopped; the vendor exposes no pid from ensure() to do better.
    */
   async stopService(): Promise<void> {
-    if (!this.started) return
+    if (!this.usedLocal) return
     await this.ensuring
+    if (otherLiveBridgeSessions()) {
+      // Last one out stops the daemon; another live bridge session still needs it.
+      if (this.started) console.error("[opencode-subagents] leaving the shared OpenCode service for other live bridge sessions")
+      return
+    }
+    // Never stop a daemon no bridge process started (e.g. the user's own opencode2 session).
+    if (!this.started && !serviceStartedByBridge()) return
     await Service.stop()
+    clearServiceMarker()
   }
 }
 
