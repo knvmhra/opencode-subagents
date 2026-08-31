@@ -1,7 +1,11 @@
 import assert from "node:assert/strict"
+import { existsSync, mkdtempSync, readFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { test } from "node:test"
 import { parseModel } from "../src/config.js"
 import { Coordinator, classifyFailure } from "../src/coordinator.js"
+import { dashDir } from "../src/dashfile.js"
 import { bundledVersion, serviceCommand } from "../src/opencode.js"
 import type {
   AgentClient,
@@ -15,6 +19,9 @@ import type {
   SessionMessage,
   Snapshot,
 } from "../src/types.js"
+
+// Keep dashboard state files out of the real ~/.local/state during tests.
+process.env.XDG_STATE_HOME = mkdtempSync(join(tmpdir(), "opencode-subagents-test-"))
 
 const config: Config = {
   aliases: {
@@ -164,6 +171,28 @@ test("close interrupts live sessions, removes them, and stops polling", async ()
   assert.equal(client.polls, polls)
 
   await coordinator.close()
+})
+
+test("dash state file tracks runs and is cleared on close", async () => {
+  const client = new FakeClient()
+  const coordinator = new Coordinator(config, new FakeConnector(client))
+  const setup = await coordinator.setup({ action: "local", directory: process.cwd() })
+  const started = await coordinator.start({ context_id: string(setup.context_id), task: "Dashboard visibility", access: "write" })
+  const file = join(dashDir(), `${process.pid}.json`)
+
+  const live = JSON.parse(readFileSync(file, "utf8")) as { runs: Array<Record<string, unknown>> }
+  assert.equal(live.runs.length, 1)
+  assert.equal(live.runs[0]!.run_id, started.run_id)
+  assert.equal(live.runs[0]!.task, "Dashboard visibility")
+  assert.equal(live.runs[0]!.state, "running")
+
+  client.finish(client.created[0]!, "succeeded", "Outcome\nDone")
+  await terminal(coordinator, string(started.run_id), "succeeded")
+  const settled = JSON.parse(readFileSync(file, "utf8")) as { runs: Array<{ state: string }> }
+  assert.equal(settled.runs[0]!.state, "succeeded")
+
+  await coordinator.close()
+  assert.equal(existsSync(file), false)
 })
 
 test("model parsing and provider error classification", () => {

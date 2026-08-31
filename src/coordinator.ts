@@ -19,6 +19,7 @@ import type {
   Snapshot,
 } from "./types.js"
 import { BridgeError } from "./types.js"
+import { clearDash, writeDash } from "./dashfile.js"
 
 export class Coordinator {
   private readonly contexts = new Map<string, Context>()
@@ -42,6 +43,7 @@ export class Coordinator {
         createdAt: Date.now(),
       }
       this.contexts.set(context.id, context)
+      this.publish()
       return {
         context_id: context.id,
         state: context.state,
@@ -66,6 +68,7 @@ export class Coordinator {
         createdAt: Date.now(),
       }
       this.contexts.set(context.id, context)
+      this.publish()
       return this.context(context)
     }
 
@@ -90,6 +93,7 @@ export class Coordinator {
       connection,
       client,
     })
+    this.publish()
     return this.context(context)
   }
 
@@ -126,6 +130,7 @@ export class Coordinator {
       await context.client.prompt(run.sessionID, workPrompt(task, context.handoff, selected.profile.instructions))
       run.state = "running"
       this.launch(run)
+      this.publish()
       return this.run(run, "compact")
     } catch (error) {
       this.release(context, run)
@@ -144,6 +149,7 @@ export class Coordinator {
       run.finishedAt = Date.now()
       this.release(context, run)
     }
+    this.publish()
     return {
       run_id: run.id,
       state: run.state,
@@ -196,6 +202,7 @@ export class Coordinator {
     )
     run.state = "running"
     this.launch(run)
+    this.publish()
     return this.run(run, "compact")
   }
 
@@ -231,6 +238,7 @@ export class Coordinator {
     )
     this.runs.clear()
     this.cycles.clear()
+    clearDash()
     if (failures.length > 0) {
       throw new BridgeError("close_failed", `Failed to clean up delegated sessions: ${failures.join("; ")}`)
     }
@@ -270,6 +278,7 @@ export class Coordinator {
         continuationPrompt(input.task, context.handoff, selected.profile.instructions),
       )
       this.launch(run)
+      this.publish()
       return this.run(run, "compact")
     } catch (error) {
       this.release(context, run)
@@ -340,6 +349,7 @@ export class Coordinator {
     }
     if (run.kind === "review") run.verdict = verdict(run.result, run.state)
     this.release(context, run)
+    this.publish()
   }
 
   private async guard(run: Run, cycle: number, signal: AbortSignal): Promise<void> {
@@ -408,6 +418,21 @@ export class Coordinator {
       ...(context.directory === undefined ? {} : { directory: context.directory }),
       ...(context.writer === undefined ? {} : { writer: context.writer }),
     }
+  }
+
+  /** Mirror current state to the dashboard file; best-effort, read by opencode-subagents-dash. */
+  private publish(): void {
+    writeDash({
+      pid: process.pid,
+      updated_at: Date.now(),
+      contexts: [...this.contexts.values()].map((context) => this.context(context)),
+      runs: [...this.runs.values()].map((run) => ({
+        ...this.run(run, "compact"),
+        task: run.task.slice(0, 200),
+        started_at: run.startedAt,
+        ...(run.finishedAt === undefined ? {} : { finished_at: run.finishedAt }),
+      })),
+    })
   }
 
   private run(run: Run, detail: StatusInput["detail"]): Record<string, unknown> {

@@ -104,6 +104,16 @@ For `shell_handoff`, `directory` is a local working directory and `handoff` tell
 
 For `remote_server`, the root agent starts or discovers an OpenCode 2 service on the target, then commits its `server_url`, remote `directory`, and optional `workspace_id`. Authentication values are never passed as tool arguments; `auth` names an environment variable containing the secret. Expose remote services only through an authenticated private network or tunnel.
 
+## Dashboard (personal, experimental)
+
+Each MCP server process mirrors its contexts and runs to `$XDG_STATE_HOME/opencode-subagents/dash/<pid>.json` (default `~/.local/state/...`) on every state change, and removes the file on clean shutdown. `opencode-subagents-dash` renders every live session in a once-per-second loop; run it in a second pane, for example:
+
+```sh
+tmux split-window -h opencode-subagents-dash
+```
+
+The dash reaps files whose process has exited. Re-run `npm link` once to pick up the new binary.
+
 ## Development
 
 ```sh

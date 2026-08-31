@@ -5,7 +5,8 @@
   "description": "An MCP control plane for delegating bounded work to OpenCode models.",
   "type": "module",
   "bin": {
-    "opencode-subagents": "dist/src/cli.js"
+    "opencode-subagents": "dist/src/cli.js",
+    "opencode-subagents-dash": "dist/src/dash.js"
   },
   "exports": {
     ".": "./dist/src/index.js"
