@@ -7,7 +7,7 @@
 | `setup` | Create a local context, or pause a two-phase setup while the root agent prepares an environment with its own tools |
 | `start` | Launch asynchronous work, or resume an existing work session with an optional model override |
 | `interrupt` | Stop a run without discarding its filesystem or OpenCode session state |
-| `status` | Read compact progress, the final handoff, or diagnostics |
+| `status` | Wait for completion, or read compact progress, the final handoff, or diagnostics |
 | `review` | Launch a fresh, non-editing model to review the candidate before CI |
 
 The server deliberately does not proxy chat. Workers return a short structured handoff, and `status` never dumps their transcript into the root model's context.
@@ -92,7 +92,11 @@ For a normal checkout, setup is one call:
 { "action": "local", "directory": "/absolute/project/path" }
 ```
 
-Pass the returned `context_id` to `start`, poll `status` by `run_id` until it reports `terminal: true`, and request `detail=result` only then. A successful work run can then be passed to `review`. Review refuses a candidate whose VCS snapshot changed after the source run, avoiding accidental review of a different filesystem state.
+Pass the returned `context_id` to `start`, continue useful work, then call `status` with `run_id` and `wait=true` to receive the final handoff in one call. A successful work run can then be passed to `review`. Review refuses a candidate whose VCS snapshot changed after the source run, avoiding accidental review of a different filesystem state.
+
+Completion also emits an MCP `notifications/message` log at level `info`, with logger `opencode-subagents.completion` and the final result as data. Clients decide whether to surface these notifications or wake the invoker; use `status(wait=true)` when notification delivery is not integrated. Waiting uses a completion listener, not model-driven polling. Cancelling a status wait leaves the worker running. Calls supplying an MCP progress token receive a heartbeat every 15 seconds; clients must allow long tool calls (and, where supported, reset their timeout on progress). Client hard deadlines still apply.
+
+The OpenCode session wait disables HTTP headers/body idle timeouts at the dispatcher boundary, including per-request limits supplied by Node fetch. It does not impose a five-minute or one-hour run limit. HTTP headers/body timeout errors reattach the wait without resubmitting the task or marking the worker failed.
 
 Environment preparation is two-phase by design:
 

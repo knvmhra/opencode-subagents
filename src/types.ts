@@ -149,7 +149,7 @@ export interface AgentClient {
   health(): Promise<{ version: string }>
   create(input: SessionCreate): Promise<string>
   prompt(sessionID: string, text: string): Promise<void>
-  wait(sessionID: string): Promise<void>
+  wait(sessionID: string, signal?: AbortSignal): Promise<void>
   interrupt(sessionID: string): Promise<boolean>
   info(sessionID: string): Promise<SessionInfo>
   messages(sessionID: string): Promise<SessionMessage[]>

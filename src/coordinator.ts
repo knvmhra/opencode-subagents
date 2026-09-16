@@ -25,6 +25,9 @@ export class Coordinator {
   private readonly contexts = new Map<string, Context>()
   private readonly runs = new Map<string, Run>()
   private readonly cycles = new Map<string, number>()
+  private readonly completionListeners = new Set<(result: Record<string, unknown>) => void>()
+  private readonly notified = new Set<string>()
+  private readonly listeners = new Set<() => void>()
   private readonly stopping = new AbortController()
 
   constructor(
@@ -206,15 +209,44 @@ export class Coordinator {
     return this.run(run, "compact")
   }
 
-  async status(input: StatusInput): Promise<Record<string, unknown>> {
+  onCompletion(listener: (result: Record<string, unknown>) => void): () => void {
+    this.completionListeners.add(listener)
+    return () => { this.completionListeners.delete(listener) }
+  }
+
+  onChange(listener: () => void): () => void {
+    this.listeners.add(listener)
+    return () => { this.listeners.delete(listener) }
+  }
+
+  private async waitForRun(run: Run, signal?: AbortSignal): Promise<void> {
+    const combined = AbortSignal.any([this.stopping.signal, ...(signal ? [signal] : [])])
+    combined.throwIfAborted()
+    if (!active(run.state)) return
+    await new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        unsubscribe()
+        combined.removeEventListener("abort", abort)
+      }
+      const abort = () => { cleanup(); reject(combined.reason) }
+      const unsubscribe = this.onChange(() => {
+        if (!active(run.state)) { cleanup(); resolve() }
+      })
+      combined.addEventListener("abort", abort, { once: true })
+    })
+  }
+
+  async status(input: StatusInput, signal?: AbortSignal): Promise<Record<string, unknown>> {
     if (input.run_id === undefined) {
+      if (input.wait) throw new BridgeError("run_required", "wait requires run_id")
       return {
         contexts: [...this.contexts.values()].map((context) => this.context(context)),
         runs: [...this.runs.values()].map((run) => this.run(run, "compact")),
       }
     }
     const run = this.needRun(input.run_id)
-    const output = this.run(run, input.detail)
+    if (input.wait) await this.waitForRun(run, signal)
+    const output = this.run(run, input.wait ? "result" : input.detail)
     if (run.snapshot === undefined || active(run.state)) return output
     const context = this.ready(run.contextID)
     const current = await context.client.snapshot(location(context))
@@ -299,7 +331,7 @@ export class Coordinator {
     const guard = this.guard(run, cycle, AbortSignal.any([stop.signal, this.stopping.signal]))
     let caught: unknown
     try {
-      await context.client.wait(run.sessionID)
+      await context.client.wait(run.sessionID, this.stopping.signal)
     } catch (error) {
       caught = error
     } finally {
@@ -422,6 +454,13 @@ export class Coordinator {
 
   /** Mirror current state to the dashboard file; best-effort, read by opencode-subagents-dash. */
   private publish(): void {
+    for (const listener of this.listeners) listener()
+    for (const run of this.runs.values()) {
+      if (active(run.state)) { this.notified.delete(run.id); continue }
+      if (this.notified.has(run.id)) continue
+      this.notified.add(run.id)
+      for (const listener of this.completionListeners) listener(this.run(run, "result"))
+    }
     writeDash({
       pid: process.pid,
       updated_at: Date.now(),

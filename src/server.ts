@@ -4,7 +4,10 @@ import { InterruptSchema, ReviewSchema, SetupSchema, StartSchema, StatusSchema }
 import { BridgeError } from "./types.js"
 
 export function buildServer(coordinator: Coordinator): McpServer {
-  const server = new McpServer({ name: "opencode-subagents", version: "0.1.0" })
+  const server = new McpServer({ name: "opencode-subagents", version: "0.1.0" }, { capabilities: { logging: {} } })
+  coordinator.onCompletion((result) => {
+    void server.sendLoggingMessage({ level: "info", logger: "opencode-subagents.completion", data: result }).catch(() => {})
+  })
 
   server.registerTool(
     "setup",
@@ -23,7 +26,7 @@ export function buildServer(coordinator: Coordinator): McpServer {
     {
       title: "Start delegated work",
       description:
-        "Start one asynchronous OpenCode worker with minimal context. Returns immediately with a run_id. A context permits only one write run at a time. Use continue_from to resume a failed, blocked, or interrupted work run, optionally with a model override.",
+        "Start one asynchronous OpenCode worker with minimal context. Returns immediately with a run_id. Completion emits a logging notification; use status(wait=true, run_id) to await the final handoff without polling. A context permits only one write run at a time. Use continue_from to resume a failed, blocked, or interrupted work run, optionally with a model override.",
       inputSchema: StartSchema,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     },
@@ -47,11 +50,22 @@ export function buildServer(coordinator: Coordinator): McpServer {
     {
       title: "Check delegated work",
       description:
-        "Return compact state for one run or all current-session contexts and runs. Every run payload includes terminal: true once the run has stopped (succeeded, failed, blocked, or interrupted); use detail=result only when terminal is true. Diagnostic includes OpenCode identifiers but never dumps the worker transcript.",
+        "Return compact state for one run or all current-session contexts and runs. Use wait=true with run_id to hold this call until completion and return the final handoff without polling. Every run payload includes terminal: true once the run has stopped (succeeded, failed, blocked, or interrupted); use detail=result only when terminal is true. Diagnostic includes OpenCode identifiers but never dumps the worker transcript.",
       inputSchema: StatusSchema,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    (input) => safe(() => coordinator.status(input)),
+    async (input, ctx) => {
+      const token = ctx.mcpReq._meta?.progressToken
+      let progress = 0
+      const heartbeat = input.wait && token !== undefined ? setInterval(() => {
+        void ctx.mcpReq.notify({ method: "notifications/progress", params: {
+          progressToken: token, progress: ++progress, message: "Waiting for delegated work",
+        } }).catch(() => {})
+      }, 15_000) : undefined
+      heartbeat?.unref()
+      try { return await safe(() => coordinator.status(input, ctx.mcpReq.signal)) }
+      finally { clearInterval(heartbeat) }
+    },
   )
 
   server.registerTool(

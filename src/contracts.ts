@@ -46,6 +46,7 @@ export const InterruptSchema = z.object({
 })
 
 export const StatusSchema = z.object({
+  wait: z.boolean().optional().describe("Wait for run completion without polling; requires run_id. Returns the final handoff."),
   run_id: z.string().min(1).optional(),
   detail: z.enum(["compact", "result", "diagnostic"]).default("compact"),
 })

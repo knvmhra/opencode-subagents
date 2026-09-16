@@ -1,3 +1,7 @@
+import { InMemoryTransport, type JSONRPCMessage } from "@modelcontextprotocol/server"
+import { buildServer } from "../src/server.js"
+import { OpenCode } from "@opencode-ai/client"
+import { Agent } from "undici"
 import assert from "node:assert/strict"
 import { existsSync, mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -6,7 +10,7 @@ import { test } from "node:test"
 import { parseModel } from "../src/config.js"
 import { Coordinator, classifyFailure } from "../src/coordinator.js"
 import { dashDir } from "../src/dashfile.js"
-import { bundledVersion, serviceCommand } from "../src/opencode.js"
+import { bundledVersion, serviceCommand, sessionWaitDispatcher, OpenCodeAgent } from "../src/opencode.js"
 import type {
   AgentClient,
   Config,
@@ -208,6 +212,119 @@ test("model parsing and provider error classification", () => {
   assert.equal(bundledVersion, "0.0.0-beta-18684")
   assert.match(serviceCommand(["opencode2", "serve", "--service"])[0]!, /@opencode-ai\/cli\/bin\/opencode2\.exe$/)
   assert.deepEqual(serviceCommand(["/opt/custom/opencode2", "serve"]), ["/opt/custom/opencode2", "serve"])
+})
+
+test("HTTP wait timeouts reattach without failing or reprompting the worker", async () => {
+  let calls = 0
+  const agent = new OpenCodeAgent(OpenCode.make({ baseUrl: "http://unused", fetch: async (url) => {
+    assert.match(String(url), /\/api\/session\/test\/wait$/)
+    if (++calls === 1) throw new TypeError("fetch failed", {
+      cause: Object.assign(new Error("Headers timed out"), { code: "UND_ERR_HEADERS_TIMEOUT" }),
+    })
+    return new Response(null, { status: 204 })
+  } }))
+  await agent.wait("test")
+  assert.equal(calls, 2)
+  const controller = new AbortController()
+  controller.abort()
+  await assert.rejects(agent.wait("test", controller.signal), /abort/i)
+  assert.equal(calls, 2)
+})
+
+test("session wait overrides fetch request timeouts at dispatch", async () => {
+  const agent = new Agent()
+  const original = agent.dispatch
+  let observed: { headersTimeout?: number | null; bodyTimeout?: number | null } | undefined
+  agent.dispatch = (options) => { observed = options; return true }
+  try {
+    sessionWaitDispatcher(agent).dispatch({
+      origin: "http://localhost", path: "/api/session/test/wait", method: "GET",
+      headersTimeout: 300_000, bodyTimeout: 300_000,
+    }, {})
+    assert.equal(observed?.headersTimeout, 0)
+    assert.equal(observed?.bodyTimeout, 0)
+  } finally {
+    agent.dispatch = original
+    await agent.close()
+  }
+})
+
+test("wait returns the handoff and completion is emitted once per resumed run", async (t) => {
+  const client = new FakeClient()
+  const coordinator = new Coordinator(config, new FakeConnector(client))
+  t.after(() => coordinator.close())
+  const completions: Record<string, unknown>[] = []
+  coordinator.onCompletion((result) => { completions.push(result) })
+  const setup = await coordinator.setup({ action: "local", directory: process.cwd() })
+  const run = await coordinator.start({ context_id: string(setup.context_id), task: "Work", access: "write" })
+  const input = { run_id: string(run.run_id), detail: "compact" as const, wait: true }
+  let returned = false
+  const waiting = coordinator.status(input).then((result) => { returned = true; return result })
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(returned, false)
+  client.finish(client.created[0]!, "succeeded", "Outcome\nDone")
+  const result = await waiting
+  assert.equal(result.terminal, true)
+  assert.equal(result.result, "Outcome\nDone")
+  assert.equal(completions.length, 1)
+  assert.equal((await coordinator.status(input)).result, result.result)
+  assert.equal(completions.length, 1)
+  await coordinator.start({ continue_from: input.run_id, access: "write" })
+  const resumed = coordinator.status(input)
+  client.finish(client.created[0]!, "succeeded", "Outcome\nContinued")
+  await resumed
+  assert.equal(completions.length, 2)
+})
+
+test("wait cancellation leaves the worker active; shutdown releases waiters", async () => {
+  const client = new FakeClient()
+  const coordinator = new Coordinator(config, new FakeConnector(client))
+  const setup = await coordinator.setup({ action: "local", directory: process.cwd() })
+  const run = await coordinator.start({ context_id: string(setup.context_id), task: "Work", access: "write" })
+  const input = { run_id: string(run.run_id), detail: "result" as const, wait: true }
+  const controller = new AbortController()
+  const waiting = coordinator.status(input, controller.signal)
+  controller.abort()
+  await assert.rejects(waiting, /abort/i)
+  assert.equal((await coordinator.status({ ...input, wait: false })).terminal, false)
+  assert.deepEqual(client.interrupted, [])
+  await assert.rejects(coordinator.status({ wait: true, detail: "compact" }), /requires run_id/)
+  const closing = assert.rejects(coordinator.status(input), /abort/i)
+  await coordinator.close()
+  await closing
+})
+
+test("MCP wait delivers a tool result and an unsolicited completion notification", async (t) => {
+  const client = new FakeClient()
+  const coordinator = new Coordinator(config, new FakeConnector(client))
+  const server = buildServer(coordinator)
+  const [remote, transport] = InMemoryTransport.createLinkedPair()
+  const received: JSONRPCMessage[] = []
+  remote.onmessage = (message) => { received.push(message) }
+  await server.connect(transport)
+  await remote.start()
+  t.after(async () => { await coordinator.close(); await server.close(); await remote.close() })
+  await remote.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {
+    protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" },
+  } })
+  await until(() => received.some((message) => "id" in message && message.id === 1))
+  await remote.send({ jsonrpc: "2.0", method: "notifications/initialized" })
+  const setup = await coordinator.setup({ action: "local", directory: process.cwd() })
+  const run = await coordinator.start({ context_id: string(setup.context_id), task: "Work", access: "write" })
+  await remote.send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: {
+    name: "status", arguments: { run_id: run.run_id, wait: true },
+  } })
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(received.some((message) => "id" in message && message.id === 2), false)
+  client.finish(client.created[0]!, "succeeded", "Outcome\nDone")
+  await until(() => received.some((message) => "id" in message && message.id === 2))
+  const response = received.find((message) => "id" in message && message.id === 2)
+  assert.ok(response && "result" in response)
+  assert.equal((response.result.structuredContent as Record<string, unknown>).result, "Outcome\nDone")
+  const notification = received.find((message) => "method" in message && message.method === "notifications/message")
+  assert.ok(notification && "params" in notification)
+  assert.equal(notification.params?.logger, "opencode-subagents.completion")
+  assert.equal((notification.params?.data as Record<string, unknown>).run_id, run.run_id)
 })
 
 class FakeConnector implements Connector {

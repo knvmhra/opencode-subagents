@@ -24,7 +24,7 @@ Call `start` with the `context_id` and the smallest task that can be completed a
 
 Use `access=write` for implementation. Treat the context as exclusively owned until that run reports `terminal: true`: do not edit the same target or start another declared writer meanwhile. `access=read` is only a coordination declaration, not a sandbox.
 
-`start` returns immediately. Continue useful root work, or poll `status` with `detail=compact` until it reports `terminal: true`. Request `detail=result` only then. Do not request diagnostic detail unless troubleshooting requires the OpenCode session identifier.
+`start` returns immediately. Continue useful root work. Completion emits an MCP logging notification for clients that surface it. To await completion, call `status` once with `run_id` and `wait=true`; it returns the final handoff without repeated polling. Cancelling that wait does not interrupt the worker. Configure the client to allow long tool calls; MCP progress tokens enable heartbeat notifications. Do not request diagnostic detail unless troubleshooting requires the OpenCode session identifier.
 
 If the run is blocked by exhausted funds, provider budget, authentication, or a denied non-interactive request, surface the exact blocker. After it is resolved, call `start` with `continue_from=<run_id>` so the existing session and filesystem state are reused. Override the model deliberately if appropriate; never invent a silent fallback policy.
 
@@ -34,7 +34,7 @@ Use `interrupt` when the work is obsolete, unsafe, or clearly headed in the wron
 
 After a work run succeeds, call `review` on its `run_id`. This must be a fresh reviewer session; never substitute the implementer's self-review. Use the configured reviewer alias unless a different model is specifically useful.
 
-Poll the returned review run with compact `status` until `terminal` is true, then fetch the result. A `PASS` is evidence for proceeding to the root agent's own checks or CI, not a replacement for them. On `FAIL`, evaluate the findings and resume the implementer or start a new bounded fix run. On `BLOCKED`, resolve the missing prerequisite before treating the candidate as reviewed.
+Await the returned review run with `status(run_id=..., wait=true)` to receive its final result. A `PASS` is evidence for proceeding to the root agent's own checks or CI, not a replacement for them. On `FAIL`, evaluate the findings and resume the implementer or start a new bounded fix run. On `BLOCKED`, resolve the missing prerequisite before treating the candidate as reviewed.
 
 Review rejects filesystem drift detected after the source run. If the candidate changed, create a work run representing the new candidate and review that result instead.
 

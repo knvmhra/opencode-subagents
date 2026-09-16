@@ -1,13 +1,33 @@
+import { setTimeout as delay } from "node:timers/promises"
 import { createHash } from "node:crypto"
 import { createRequire } from "node:module"
 import { dirname, join } from "node:path"
 import { OpenCode } from "@opencode-ai/client"
 import { Service } from "@opencode-ai/client/service"
+import { Agent, type Dispatcher } from "undici"
 import type { Config, Connection, Location, Model, RemoteAuth, SessionCreate, Snapshot } from "./types.js"
 import { BridgeError, type AgentClient, type Connector, type SessionInfo, type SessionMessage } from "./types.js"
 import { clearServiceMarker, markServiceStartedByBridge, otherLiveBridgeSessions, serviceStartedByBridge } from "./dashfile.js"
 
 type Client = ReturnType<typeof OpenCode.make>
+
+// Fetch may supply its own five-minute limits, overriding Agent defaults.
+// Enforce unlimited idle time only for session.wait at the dispatch boundary.
+export function sessionWaitDispatcher(dispatcher: Dispatcher): Pick<Dispatcher, "dispatch"> {
+  return {
+    dispatch(options, handler) {
+      return dispatcher.dispatch({ ...options, headersTimeout: 0, bodyTimeout: 0 }, handler)
+    },
+  }
+}
+const waitDispatcher = sessionWaitDispatcher(new Agent())
+const sessionFetch: typeof globalThis.fetch = (input, init) => {
+  const url = new URL(input instanceof Request ? input.url : input)
+  if (!/^\/api\/session\/[^/]+\/wait$/.test(url.pathname)) return globalThis.fetch(input, init)
+  const options = { ...init, dispatcher: waitDispatcher }
+  // Node and the installed Undici expose different dispatcher TypeScript versions.
+  return globalThis.fetch(input, options as unknown as NonNullable<Parameters<typeof globalThis.fetch>[1]>)
+}
 
 export class OpenCodeConnector implements Connector {
   /** True once ensure() decided to spawn or replace the local service in this process. */
@@ -25,7 +45,7 @@ export class OpenCodeConnector implements Connector {
 
   async connect(connection: Connection): Promise<AgentClient> {
     if (connection.target === "remote_server") {
-      const client = new OpenCodeAgent(OpenCode.make({ baseUrl: connection.url, headers: headers(connection.auth) }))
+      const client = new OpenCodeAgent(OpenCode.make({ baseUrl: connection.url, headers: headers(connection.auth), fetch: sessionFetch }))
       await client.health()
       return client
     }
@@ -45,7 +65,7 @@ export class OpenCodeConnector implements Connector {
       () => undefined,
     )
     const endpoint = await ensuring
-    const client = new OpenCodeAgent(OpenCode.make({ baseUrl: endpoint.url, headers: Service.headers(endpoint) }))
+    const client = new OpenCodeAgent(OpenCode.make({ baseUrl: endpoint.url, headers: Service.headers(endpoint), fetch: sessionFetch }))
     await client.health()
     return client
   }
@@ -95,8 +115,19 @@ export class OpenCodeAgent implements AgentClient {
     await this.client.session.prompt({ sessionID, text, delivery: "queue", resume: true })
   }
 
-  async wait(sessionID: string): Promise<void> {
-    await this.client.session.wait({ sessionID })
+  async wait(sessionID: string, signal?: AbortSignal): Promise<void> {
+    for (;;) {
+      signal?.throwIfAborted()
+      try {
+        await this.client.session.wait({ sessionID }, signal === undefined ? undefined : { signal })
+        return
+      } catch (error) {
+        // A timed-out HTTP observer does not mean the session stopped. Reattach
+        // without resubmitting the prompt or releasing the context's writer.
+        if (!waitTimedOut(error) || signal?.aborted) throw error
+        await delay(250, undefined, signal === undefined ? undefined : { signal })
+      }
+    }
   }
 
   async interrupt(sessionID: string): Promise<boolean> {
@@ -229,4 +260,15 @@ function secret(name: string): string {
   const value = process.env[name]
   if (value === undefined) throw new BridgeError("missing_secret", `Environment variable ${name} is not set`)
   return value
+}
+
+function waitTimedOut(error: unknown): boolean {
+  const seen = new Set<unknown>()
+  while (error !== null && typeof error === "object" && !seen.has(error)) {
+    seen.add(error)
+    const value = error as { code?: string; cause?: unknown }
+    if (value.code === "UND_ERR_HEADERS_TIMEOUT" || value.code === "UND_ERR_BODY_TIMEOUT") return true
+    error = value.cause
+  }
+  return false
 }
